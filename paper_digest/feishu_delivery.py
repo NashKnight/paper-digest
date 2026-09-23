@@ -25,7 +25,9 @@ def send_feishu_message(
 
     request = Request(
         config.webhook_url,
-        data=json.dumps(_build_payload(title, body)).encode("utf-8"),
+        data=json.dumps(
+            _build_card_payload(title, body) if config.compact_card else _build_payload(title, body)
+        ).encode("utf-8"),
         headers={"Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
@@ -106,3 +108,20 @@ def _validate_response(payload: bytes) -> None:
     raise FeishuDeliveryError(
         f"Feishu webhook rejected notification with code {code}: {message}"
     )
+
+
+def _build_card_payload(title: str, body: str) -> dict[str, object]:
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": "blue",
+                "title": {"tag": "plain_text", "content": title},
+            },
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": section}}
+                for section in body.split("\n\n") if section.strip()
+            ],
+        },
+    }

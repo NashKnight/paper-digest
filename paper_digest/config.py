@@ -92,6 +92,7 @@ class FeishuWebhookConfig:
     webhook_url: str
     title_prefix: str
     skip_if_empty: bool
+    compact_card: bool = False
     target: DeliveryTarget = "digest"
     include_focus: bool = True
     focus_target: DeliveryFocusTarget = "digest"
@@ -309,6 +310,7 @@ class AppConfig:
     analysis: AnalysisConfig | None = None
     deliveries: list[DeliveryConfig] = field(default_factory=list)
     email: EmailConfig | None = None
+    since_last_run: bool = False
 
 
 def load_config(path: str | Path) -> AppConfig:
@@ -372,6 +374,7 @@ def load_config(path: str | Path) -> AppConfig:
     email = _load_email(raw.get("email"))
 
     return AppConfig(
+        since_last_run=_bool(app_section.get("since_last_run", False), "app.since_last_run"),
         timezone=timezone_name,
         lookback_hours=lookback_hours,
         output_dir=output_dir,
@@ -858,6 +861,7 @@ def _build_feishu_webhook_config(
     field_name: str,
 ) -> FeishuWebhookConfig:
     config = FeishuWebhookConfig(
+        compact_card=_bool(value.get("compact_card", False), f"{field_name}.compact_card"),
         webhook_url=_required_string(
             value.get("webhook_url"), f"{field_name}.webhook_url"
         ),

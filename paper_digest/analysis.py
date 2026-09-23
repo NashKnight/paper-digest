@@ -8,7 +8,11 @@ from collections.abc import Sequence
 from .arxiv_client import Paper, PaperAnalysis
 from .config import AnalysisConfig, DigestTemplate
 from .digest import DigestRun, TopicDigest
-from .openai_analysis import OpenAIAnalysisError, analyze_paper_with_openai
+from .openai_analysis import (
+    OpenAIAnalysisError,
+    analyze_paper_with_openai,
+    classify_paper_relevance_with_openai,
+)
 from .translation import translated_summary, translated_title
 
 _TOPIC_TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9+-]{2,}|[\u4e00-\u9fff]{2,}")
@@ -123,7 +127,24 @@ def enrich_digest_with_analysis(
 
     papers_to_analyze = _select_papers_for_analysis(digest, config.max_papers)
     if papers_to_analyze:
+        classified_papers = {paper.canonical_id() for paper in papers_to_analyze}
+        relevant_papers: dict[str, str] = {}
         for paper in papers_to_analyze:
+            try:
+                label, reason = classify_paper_relevance_with_openai(config, paper)
+            except OpenAIAnalysisError as exc:
+                if config.fail_on_error:
+                    raise AnalysisError(str(exc)) from exc
+                classified_papers.discard(paper.canonical_id())
+                continue
+            if label == "not_relevant":
+                continue
+            relevant_papers[paper.canonical_id()] = label
+            paper.match_reasons.append(f"LLM relevance: {label} - {reason}")
+
+        _drop_irrelevant_papers(digest, classified_papers, relevant_papers)
+
+        for paper in _select_papers_for_analysis(digest, config.max_papers):
             try:
                 paper.analysis = _analyze_paper(config, paper, template=template)
             except OpenAIAnalysisError as exc:
@@ -138,6 +159,41 @@ def enrich_digest_with_analysis(
         template=template,
         topic_candidates=topic_candidates,
     )
+
+
+def _drop_irrelevant_papers(
+    digest: DigestRun,
+    classified_papers: set[str],
+    relevant_papers: dict[str, str],
+) -> None:
+    for feed in digest.feeds:
+        feed.papers = [
+            paper
+            for paper in feed.papers
+            if paper.canonical_id() not in classified_papers
+            or _label_allowed_for_feed(
+                relevant_papers.get(paper.canonical_id()),
+                feed.name,
+            )
+        ]
+
+
+def _label_allowed_for_feed(label: str | None, feed_name: str) -> bool:
+    if label is None:
+        return False
+    normalized = feed_name.casefold()
+    if "core" in normalized:
+        return label == "omni_duplex_core"
+    if "adjacent" in normalized:
+        return label == "omni_duplex_related"
+    if (
+        "simplex" in normalized
+        or "half duplex" in normalized
+        or "one-way" in normalized
+        or "multimodal" in normalized
+    ):
+        return label == "omni_simplex_related"
+    return label != "not_relevant"
 
 
 def apply_digest_briefing(

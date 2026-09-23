@@ -44,10 +44,12 @@ def build_config() -> AnalysisConfig:
 
 
 class AnalysisTests(unittest.TestCase):
+    @patch("paper_digest.analysis.classify_paper_relevance_with_openai")
     @patch("paper_digest.analysis.analyze_paper_with_openai")
     def test_enrich_digest_with_analysis_round_robins_across_feeds(
         self,
         mock_analyze_paper_with_openai,
+        mock_classify_paper_relevance_with_openai,
     ) -> None:
         digest = DigestRun(
             generated_at=datetime(2026, 4, 8, 10, 0, tzinfo=UTC),
@@ -62,6 +64,10 @@ class AnalysisTests(unittest.TestCase):
             PaperAnalysis(conclusion="Analysis A"),
             PaperAnalysis(conclusion="Analysis C"),
         ]
+        mock_classify_paper_relevance_with_openai.side_effect = [
+            ("omni_duplex_related", "A is related."),
+            ("omni_duplex_related", "C is related."),
+        ]
 
         enrich_digest_with_analysis(
             build_config(),
@@ -72,6 +78,7 @@ class AnalysisTests(unittest.TestCase):
         )
 
         self.assertEqual(mock_analyze_paper_with_openai.call_count, 2)
+        self.assertEqual(mock_classify_paper_relevance_with_openai.call_count, 2)
         self.assertEqual(digest.feeds[0].papers[0].analysis.conclusion, "Analysis A")
         self.assertEqual(digest.feeds[1].papers[0].analysis.conclusion, "Analysis C")
         self.assertIsNone(digest.feeds[0].papers[1].analysis)
@@ -81,6 +88,44 @@ class AnalysisTests(unittest.TestCase):
             ["A: Analysis A", "B: B summary"],
         )
         self.assertEqual(digest.feeds[1].key_points, ["C: Analysis C"])
+
+    @patch("paper_digest.analysis.classify_paper_relevance_with_openai")
+    @patch("paper_digest.analysis.analyze_paper_with_openai")
+    def test_enrich_digest_with_analysis_drops_not_relevant_papers(
+        self,
+        mock_analyze_paper_with_openai,
+        mock_classify_paper_relevance_with_openai,
+    ) -> None:
+        config = build_config()
+        digest = DigestRun(
+            generated_at=datetime(2026, 4, 8, 10, 0, tzinfo=UTC),
+            timezone="UTC",
+            lookback_hours=24,
+            feeds=[
+                FeedDigest(
+                    name="Omni",
+                    papers=[build_paper("Relevant"), build_paper("Wireless duplex")],
+                )
+            ],
+        )
+        mock_classify_paper_relevance_with_openai.side_effect = [
+            ("omni_duplex_related", "Discusses streaming speech interaction."),
+            ("not_relevant", "Wireless duplexing is unrelated."),
+        ]
+        mock_analyze_paper_with_openai.return_value = PaperAnalysis(
+            conclusion="Relevant analysis."
+        )
+
+        enrich_digest_with_analysis(
+            config,
+            digest,
+            template="default",
+            top_highlights=2,
+            feed_key_points=2,
+        )
+
+        self.assertEqual([paper.title for paper in digest.feeds[0].papers], ["Relevant"])
+        self.assertEqual(mock_analyze_paper_with_openai.call_count, 1)
 
     def test_build_digest_highlights_falls_back_to_raw_summary(self) -> None:
         paper = build_paper("A")

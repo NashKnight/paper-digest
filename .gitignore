@@ -17,3 +17,6 @@ reports/
 config.toml
 .paper-digest-state/
 .paper-digest-models/
+
+# Personal delivery configuration
+config.omni.toml

@@ -78,6 +78,17 @@ class ParseFeedTests(unittest.TestCase):
 
         self.assertEqual(query, "(cat:cs.AI OR cat:cs.CL)")
 
+    def test_build_search_query_includes_optional_queries(self) -> None:
+        query = build_search_query(
+            ["cs.AI", "cs.CL"],
+            ["Gander", "full duplex"],
+        )
+
+        self.assertEqual(
+            query,
+            '(cat:cs.AI OR cat:cs.CL) AND (all:Gander OR all:"full duplex")',
+        )
+
     def test_parse_feed_extracts_papers(self) -> None:
         papers = parse_feed(FIXTURE_PATH.read_bytes())
 

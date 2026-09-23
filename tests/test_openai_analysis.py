@@ -42,6 +42,20 @@ def build_config() -> AnalysisConfig:
     )
 
 
+def build_chat_config() -> AnalysisConfig:
+    return AnalysisConfig(
+        provider="openai",
+        model="gpt-5.6-sol",
+        api_key_env="OPENAI_API_KEY",
+        base_url="https://llm-center.example/v1/chat/completions",
+        timeout_seconds=60,
+        max_papers=10,
+        max_output_tokens=600,
+        language="Chinese",
+        reasoning_effort="none",
+    )
+
+
 def build_paper() -> Paper:
     published_at = datetime(2026, 4, 8, 9, 0, tzinfo=UTC)
     return Paper(
@@ -98,6 +112,43 @@ class OpenAIAnalysisTests(unittest.TestCase):
         self.assertEqual(payload["model"], "gpt-5-mini")
         self.assertEqual(payload["text"]["format"]["type"], "json_schema")
         self.assertEqual(request.headers["Authorization"], "Bearer secret")
+
+    @patch("paper_digest.openai_analysis.urlopen")
+    def test_analyze_paper_with_chat_completions_response(
+        self,
+        mock_urlopen,
+    ) -> None:
+        mock_urlopen.return_value = DummyHTTPResponse(
+            json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": json.dumps(
+                                    {
+                                        "conclusion": "中文结论。",
+                                        "contributions": ["贡献"],
+                                        "audience": "研究者。",
+                                        "limitations": ["摘要证据有限。"],
+                                    }
+                                ),
+                            }
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+        )
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "secret"}, clear=False):
+            analysis = analyze_paper_with_openai(build_chat_config(), build_paper())
+
+        self.assertEqual(analysis.conclusion, "中文结论。")
+        request = mock_urlopen.call_args.args[0]
+        payload = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(payload["model"], "gpt-5.6-sol")
+        self.assertEqual(payload["messages"][0]["role"], "system")
+        self.assertEqual(payload["response_format"]["type"], "json_object")
 
     def test_analyze_paper_with_openai_requires_api_key(self) -> None:
         with patch.dict(os.environ, {}, clear=True):

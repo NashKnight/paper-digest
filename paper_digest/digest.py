@@ -147,10 +147,13 @@ class DigestRun:
     default_sort_by: SortMode = "hybrid"
     sort_summary: str = ""
     ranking_weights: dict[str, int] = field(default_factory=dict)
+    window_start: datetime | None = None
 
     def to_dict(self) -> dict[str, object]:
         sort_summary = self.sort_summary or _sort_mode_description(self.default_sort_by)
         return {
+            "window_start": self.window_start.isoformat() if self.window_start else None,
+            "window_end": self.generated_at.isoformat(),
             "generated_at": self.generated_at.isoformat(),
             "timezone": self.timezone,
             "lookback_hours": self.lookback_hours,
@@ -302,7 +305,7 @@ def _render_default_markdown(digest: DigestRun) -> str:
         "# Daily Paper Digest",
         "",
         f"- Generated at: {generated_at} ({digest.timezone})",
-        f"- Lookback window: last {digest.lookback_hours} hours",
+        _window_label(digest, chinese=False),
         f"- Sorting: {sort_summary}",
         "",
     ]
@@ -390,7 +393,7 @@ def _render_zh_daily_brief(digest: DigestRun) -> str:
         "# 每日论文简报",
         "",
         f"- 生成时间：{generated_at} ({digest.timezone})",
-        f"- 检索窗口：最近 {digest.lookback_hours} 小时",
+        _window_label(digest, chinese=True),
         f"- 命中概览：{summarize_digest(digest)}",
         f"- 排序策略：{sort_summary}",
         "",
@@ -527,7 +530,7 @@ def _render_default_focus_only_markdown(digest: DigestRun) -> str:
         "# Daily Paper Focus",
         "",
         f"- Generated at: {generated_at} ({digest.timezone})",
-        f"- Lookback window: last {digest.lookback_hours} hours",
+        _window_label(digest, chinese=False),
         f"- Focus summary: {summarize_focus_items(digest)}",
         "",
     ]
@@ -559,7 +562,7 @@ def _render_default_focus_brief_only(digest: DigestRun) -> str:
         "# Daily Paper Focus",
         "",
         f"- Generated at: {generated_at} ({digest.timezone})",
-        f"- Lookback window: last {digest.lookback_hours} hours",
+        _window_label(digest, chinese=False),
         f"- Focus summary: {summarize_focus_items(digest)}",
         "",
     ]
@@ -586,7 +589,7 @@ def _render_zh_focus_only_brief(digest: DigestRun) -> str:
         "# 每日关注清单",
         "",
         f"- 生成时间：{generated_at} ({digest.timezone})",
-        f"- 检索窗口：最近 {digest.lookback_hours} 小时",
+        _window_label(digest, chinese=True),
         f"- Focus 概览：{summarize_focus_items(digest)}",
         "",
     ]
@@ -618,7 +621,7 @@ def _render_zh_focus_brief_only(digest: DigestRun) -> str:
         "# 每日关注清单",
         "",
         f"- 生成时间：{generated_at} ({digest.timezone})",
-        f"- 检索窗口：最近 {digest.lookback_hours} 小时",
+        _window_label(digest, chinese=True),
         f"- Focus 概览：{summarize_focus_items(digest)}",
         "",
     ]
@@ -645,7 +648,7 @@ def _render_default_action_only_markdown(digest: DigestRun) -> str:
         "# Daily Action Brief",
         "",
         f"- Generated at: {generated_at} ({digest.timezone})",
-        f"- Lookback window: last {digest.lookback_hours} hours",
+        _window_label(digest, chinese=False),
         f"- Action summary: {summarize_action_items(digest)}",
         "",
     ]
@@ -672,7 +675,7 @@ def _render_zh_action_only_brief(digest: DigestRun) -> str:
         "# 每日行动简报",
         "",
         f"- 生成时间：{generated_at} ({digest.timezone})",
-        f"- 检索窗口：最近 {digest.lookback_hours} 小时",
+        _window_label(digest, chinese=True),
         f"- 行动概览：{summarize_action_items(digest)}",
         "",
     ]
@@ -1219,3 +1222,15 @@ def digest_has_papers(digest: DigestRun) -> bool:
     """Return True when the digest contains at least one paper."""
 
     return any(feed.papers for feed in digest.feeds)
+
+
+def _window_label(digest: DigestRun, *, chinese: bool) -> str:
+    if digest.window_start is None:
+        if chinese:
+            return f"- 检索窗口：最近 {digest.lookback_hours} 小时"
+        return f"- Lookback window: last {digest.lookback_hours} hours"
+    local_tz = ZoneInfo(digest.timezone)
+    start = digest.window_start.astimezone(local_tz).isoformat()
+    end = digest.generated_at.astimezone(local_tz).isoformat()
+    prefix = "检索窗口（上次成功拉取至本次）" if chinese else "Window (since last successful fetch)"
+    return f"- {prefix}: ({start}, {end}]"

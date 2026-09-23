@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -94,6 +95,17 @@ def generate_digest(
     managed_state = state
     if managed_state is None:
         managed_state = load_state(config.state)
+    window_start = None
+    lookback_hours = config.lookback_hours
+    if config.since_last_run:
+        if not config.state.enabled:
+            raise ValueError("since_last_run requires persistent state")
+        window_start = managed_state.last_successful_fetch_at
+        if window_start is None:
+            raise ValueError("since_last_run requires an initial last_successful_fetch_at")
+        if window_start.tzinfo is None or window_start > now_utc:
+            raise ValueError("last_successful_fetch_at must be aware and not in the future")
+        lookback_hours = max(1, math.ceil((now_utc - window_start).total_seconds() / 3600))
     managed_feedback = feedback_state
     if managed_feedback is None:
         managed_feedback = load_feedback(config.feedback)
@@ -112,19 +124,25 @@ def generate_digest(
         papers = fetch_feed_papers(
             feed,
             now=now_utc,
-            lookback_hours=config.lookback_hours,
+            lookback_hours=lookback_hours,
             request_delay_seconds=config.request_delay_seconds,
             request_timeout_seconds=config.request_timeout_seconds,
             retry_attempts=config.fetch_retry_attempts,
             retry_backoff_seconds=config.fetch_retry_backoff_seconds,
             contact_email=contact_email,
             openalex_api_key=openalex_api_key,
+            **({"window_start": window_start} if window_start is not None else {}),
         )
+        if window_start is not None:
+            papers = [
+                paper for paper in papers
+                if window_start < paper.published_at <= now_utc
+            ]
         filtered = filter_papers(
             papers,
-            feed,
+            replace(feed, max_items=len(papers) or 1) if window_start is not None else feed,
             now=now_utc,
-            lookback_hours=config.lookback_hours,
+            lookback_hours=lookback_hours,
             ranking=config.ranking,
         )
         filtered = apply_feedback_to_papers(
@@ -173,9 +191,10 @@ def generate_digest(
         )
 
     digest = DigestRun(
+        window_start=window_start,
         generated_at=local_now,
         timezone=config.timezone,
-        lookback_hours=config.lookback_hours,
+        lookback_hours=lookback_hours,
         feeds=feeds,
         template=config.digest.template,
     )
@@ -223,6 +242,7 @@ def generate_digest(
         now=local_now,
         max_items=config.notify.max_action_items,
     )
+    managed_state.last_successful_fetch_at = now_utc
     if state is None:
         save_state(config.state, managed_state)
     if feedback_state is None:

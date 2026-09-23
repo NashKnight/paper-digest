@@ -209,9 +209,16 @@ class Paper:
         )
 
 
-def build_search_query(categories: Iterable[str]) -> str:
+def build_search_query(
+    categories: Iterable[str],
+    queries: Iterable[str] = (),
+) -> str:
     clauses = [f"cat:{category}" for category in categories]
-    return "(" + " OR ".join(clauses) + ")"
+    category_query = "(" + " OR ".join(clauses) + ")"
+    query_terms = [_arxiv_all_query(query) for query in queries if query.strip()]
+    if not query_terms:
+        return category_query
+    return f"{category_query} AND ({' OR '.join(query_terms)})"
 
 
 def fetch_latest_papers(
@@ -221,46 +228,83 @@ def fetch_latest_papers(
     request_timeout_seconds: int = 60,
     retry_attempts: int = 4,
     retry_backoff_seconds: float = 10.0,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
 ) -> list[Paper]:
     """Fetch recent arXiv papers, falling back to RSS when the API is limited."""
 
-    params = {
-        "search_query": build_search_query(feed.categories),
-        "start": 0,
-        "max_results": feed.max_results,
-        "sortBy": "submittedDate",
-        "sortOrder": "descending",
-    }
-    url = f"{ARXIV_API_URL}?{urlencode(params)}"
-    request = Request(
-        url,
-        headers={
-            "User-Agent": "paper-digest/0.1 (research-digest generator)",
-            "Accept": "application/atom+xml",
-        },
-    )
+    query = build_search_query(feed.categories, feed.queries)
+    if window_start is not None:
+        if window_end is None:
+            raise ValueError("window_end is required with window_start")
+        query = (
+            f"({query}) AND submittedDate:["
+            f"{window_start.astimezone(UTC):%Y%m%d%H%M} TO "
+            f"{window_end.astimezone(UTC):%Y%m%d%H%M}]"
+        )
+    papers: list[Paper] = []
+    offset = 0
+    seen_ids: set[str] = set()
+    while True:
+        params = {
+            "search_query": query,
+            "start": offset,
+            "max_results": min(feed.max_results, 1000),
+            "sortBy": "submittedDate",
+            "sortOrder": "descending",
+        }
+        request = Request(
+            f"{ARXIV_API_URL}?{urlencode(params)}",
+            headers={
+                "User-Agent": "paper-digest/0.1 (research-digest generator)",
+                "Accept": "application/atom+xml",
+            },
+        )
+        try:
+            payload = fetch_bytes_with_retry(
+                request,
+                timeout_seconds=request_timeout_seconds,
+                request_delay_seconds=request_delay_seconds,
+                retry_attempts=retry_attempts,
+                retry_backoff_seconds=retry_backoff_seconds,
+                error_factory=ArxivClientError,
+                operation_description=f"failed to fetch papers for feed {feed.name!r}",
+            )
+        except ArxivClientError as exc:
+            # RSS covers only recent announcements, not an arbitrary time range.
+            if window_start is not None:
+                raise
+            return fetch_latest_papers_from_rss(
+                feed,
+                request_delay_seconds=request_delay_seconds,
+                request_timeout_seconds=request_timeout_seconds,
+                retry_attempts=retry_attempts,
+                retry_backoff_seconds=retry_backoff_seconds,
+                api_error=exc,
+            )
+        page = parse_feed(payload)
+        papers.extend(page)
+        if window_start is None:
+            return papers
+        root = ET.fromstring(payload)
+        total_text = root.findtext("{http://a9.com/-/spec/opensearch/1.1/}totalResults")
+        total = int(total_text) if total_text is not None else None
+        offset += len(page)
+        if total is not None and offset >= total:
+            return papers
+        if total is None and len(page) < min(feed.max_results, 1000):
+            return papers
+        page_ids = {paper.canonical_id() for paper in page}
+        if not page_ids or page_ids <= seen_ids:
+            raise ArxivClientError("arXiv pagination stopped before the full range was fetched")
+        seen_ids.update(page_ids)
 
-    try:
-        payload = fetch_bytes_with_retry(
-            request,
-            timeout_seconds=request_timeout_seconds,
-            request_delay_seconds=request_delay_seconds,
-            retry_attempts=retry_attempts,
-            retry_backoff_seconds=retry_backoff_seconds,
-            error_factory=ArxivClientError,
-            operation_description=f"failed to fetch papers for feed {feed.name!r}",
-        )
-    except ArxivClientError as exc:
-        return fetch_latest_papers_from_rss(
-            feed,
-            request_delay_seconds=request_delay_seconds,
-            request_timeout_seconds=request_timeout_seconds,
-            retry_attempts=retry_attempts,
-            retry_backoff_seconds=retry_backoff_seconds,
-            api_error=exc,
-        )
-    papers = parse_feed(payload)
-    return papers
+
+def _arxiv_all_query(value: str) -> str:
+    normalized = " ".join(value.split())
+    if " " in normalized:
+        return f'all:"{normalized}"'
+    return f"all:{normalized}"
 
 
 def fetch_latest_papers_from_rss(

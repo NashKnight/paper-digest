@@ -57,6 +57,30 @@ def build_config() -> AnalysisConfig:
 
 
 class AnalysisAdditionalTests(unittest.TestCase):
+    def setUp(self) -> None:
+        classifier = patch(
+            "paper_digest.analysis.classify_paper_relevance_with_openai",
+            return_value=("omni_duplex_related", "Relevant speech work"),
+        )
+        self.mock_classifier = classifier.start()
+        self.addCleanup(classifier.stop)
+
+    def test_classifier_failure_keeps_paper_when_errors_are_optional(self) -> None:
+        self.mock_classifier.side_effect = OpenAIAnalysisError("classifier unavailable")
+        paper = build_paper("Agent benchmark")
+        digest = DigestRun(
+            generated_at=datetime(2026, 4, 8, 10, tzinfo=UTC),
+            timezone="UTC", lookback_hours=24,
+            feeds=[FeedDigest(name="Omni Duplex Core", papers=[paper])],
+        )
+        with patch("paper_digest.analysis.analyze_paper_with_openai",
+                   side_effect=OpenAIAnalysisError("analysis unavailable")):
+            enrich_digest_with_analysis(
+                replace(build_config(), fail_on_error=False), digest,
+                template="default", top_highlights=1, feed_key_points=1,
+            )
+        self.assertEqual(digest.feeds[0].papers, [paper])
+
     @patch("paper_digest.analysis.analyze_paper_with_openai")
     def test_enrich_digest_with_analysis_skips_analysis_when_max_papers_is_zero(
         self,

@@ -205,6 +205,8 @@ def _build_notification_message(
     feedback_only: bool = False,
     kind: str = "digest",
 ) -> NotificationMessage:
+    if isinstance(delivery, FeishuWebhookConfig) and delivery.compact_card and kind == "digest":
+        return _compact_feishu_message(delivery, digest)
     summary = _notification_summary(digest, feedback_only=feedback_only, kind=kind)
     if kind == "focus":
         body = render_focus_brief_markdown(digest)
@@ -251,6 +253,7 @@ def _clone_digest(
     action_items: list[ActionItem],
 ) -> DigestRun:
     return DigestRun(
+        window_start=digest.window_start,
         generated_at=digest.generated_at,
         timezone=digest.timezone,
         lookback_hours=digest.lookback_hours,
@@ -419,6 +422,7 @@ def _single_feed_digest(digest: DigestRun, feed: FeedDigest) -> DigestRun:
         highlights = [_format_topic_highlight(topic) for topic in topic_sections]
 
     return DigestRun(
+        window_start=digest.window_start,
         generated_at=digest.generated_at,
         timezone=digest.timezone,
         lookback_hours=digest.lookback_hours,
@@ -726,3 +730,52 @@ def _delivery_target(
     delivery: DeliveryConfig,
 ) -> str:
     return delivery.target
+
+
+def _compact_feishu_message(
+    delivery: FeishuWebhookConfig, digest: DigestRun,
+) -> NotificationMessage:
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    def clean(value: str, limit: int) -> str:
+        value = " ".join(value.split())
+        for token in ("<", ">", "[", "]", "*", "`"):
+            value = value.replace(token, "")
+        return value if len(value) <= limit else value[:limit - 1] + "…"
+
+    tz = ZoneInfo(digest.timezone)
+    start = digest.window_start or digest.generated_at - timedelta(hours=digest.lookback_hours)
+    count = sum(len(feed.papers) for feed in digest.feeds)
+    sections = [
+        f"{start.astimezone(tz):%m/%d %H:%M} → {digest.generated_at.astimezone(tz):%m/%d %H:%M}（北京时间）\n"
+        f"新增 **{count}** 篇相关论文"
+    ]
+    labels = {
+        "Omni Duplex Core": "全双工 · 核心进展",
+        "Omni Duplex Adjacent": "语音交互 · 相关进展",
+        "Omni Simplex / One-way Multimodal": "多模态 · 单向与半双工",
+    }
+    remaining = 8
+    for feed in digest.feeds:
+        shown = feed.papers[:remaining]
+        if not shown:
+            continue
+        lines = [f"**{labels.get(feed.name, clean(feed.name, 60))}**"]
+        for paper in shown:
+            title = paper.translation.title if paper.translation else paper.title
+            lines.append(f"• [{clean(title, 120)}]({paper.abstract_url})")
+            if paper.analysis and paper.analysis.conclusion:
+                lines.append(clean(paper.analysis.conclusion, 100))
+            elif paper.topics or paper.tags:
+                lines.append("方向：" + clean(" / ".join((paper.topics or paper.tags)[:3]), 60))
+        sections.append("\n".join(lines))
+        remaining -= len(shown)
+    if count == 0:
+        sections.append("本次暂无新增相关论文。")
+    elif count > 8:
+        sections.append(f"展示前 8 篇；其余 {count - 8} 篇已收录本地完整简报。")
+    return NotificationMessage(
+        title=f"{delivery.title_prefix} · {digest.generated_at.astimezone(tz):%m月%d日}",
+        body="\n\n".join(sections), summary=f"新增 {count} 篇",
+    )

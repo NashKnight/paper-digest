@@ -23,9 +23,18 @@ def fetch_feed_papers(
     retry_backoff_seconds: float,
     contact_email: str | None,
     openalex_api_key: str | None,
+    window_start: datetime | None = None,
 ) -> list[Paper]:
     """Fetch papers for a feed from its configured source."""
 
+    if feed.source == "arxiv" and window_start is not None:
+        return fetch_latest_papers(
+            feed, window_start=window_start, window_end=now,
+            request_delay_seconds=request_delay_seconds,
+            request_timeout_seconds=request_timeout_seconds,
+            retry_attempts=retry_attempts,
+            retry_backoff_seconds=retry_backoff_seconds,
+        )
     if feed.source == "arxiv":
         return fetch_latest_papers(
             feed,

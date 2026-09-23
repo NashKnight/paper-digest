@@ -14,6 +14,7 @@ from .config import StateConfig
 class DigestState:
     seen_papers: dict[str, dict[str, str]]
     action_notifications: dict[str, dict[str, str]] = field(default_factory=dict)
+    last_successful_fetch_at: datetime | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -60,6 +61,10 @@ def load_state(config: StateConfig) -> DigestState:
             }
     normalized_notifications = normalize_action_notifications(notifications)
     return DigestState(
+        last_successful_fetch_at=(
+            datetime.fromisoformat(raw["last_successful_fetch_at"])
+            if raw.get("last_successful_fetch_at") else None
+        ),
         seen_papers=normalized,
         action_notifications=normalized_notifications,
     )
@@ -103,6 +108,10 @@ def save_state(config: StateConfig, state: DigestState) -> None:
     config.path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "version": 2,
+        "last_successful_fetch_at": (
+            state.last_successful_fetch_at.isoformat()
+            if state.last_successful_fetch_at is not None else None
+        ),
         "feeds": state.seen_papers,
         "action_notifications": state.action_notifications,
     }
